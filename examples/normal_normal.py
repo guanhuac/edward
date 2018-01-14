@@ -14,19 +14,33 @@ from edward.util import get_session, Progbar
 
 ed.set_seed(42)
 
-# DATA
+def model():
+  """Normal-Normal with known variance."""
+  mu = Normal(loc=0.0, scale=1.0, name="mu")
+  x = Normal(loc=mu, scale=1.0, sample_shape=50, name="x")
+  return x
+
+def variational():
+  qmu = Normal(loc=tf.get_variable("loc", []),
+               scale=tf.nn.softplus(tf.get_variable("shape", [])),
+               name="qmu")
+  return qmu
+
+variational = tf.make_template("variational", variational)
+
 x_data = np.array([0.0] * 50)
 
-# MODEL: Normal-Normal with known variance
-mu = Normal(loc=0.0, scale=1.0)
-x = Normal(loc=tf.ones(50) * mu, scale=1.0)
-
-# INFERENCE
-qmu = Normal(loc=tf.Variable(0.0), scale=tf.nn.softplus(tf.Variable(1.0))+1e-3)
-
 # analytic solution: N(loc=0.0, scale=\sqrt{1/51}=0.140)
-loss, grads_and_vars = ed.klqp({mu: qmu}, data={x: x_data})
+loss = ed.klqp_reparameterization(
+    model,
+    variational,
+    align_latent=lambda name: 'qmu' if name == 'mu' else name,
+    align_data=lambda name: 'x_data' if name == 'x' else name,
+    x_data=x_data)
 
+var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+grads = tf.gradients(loss, var_list)
+grads_and_vars = list(zip(grads, var_list))
 train_op = tf.train.AdamOptimizer().apply_gradients(grads_and_vars)
 progbar = Progbar(1000)
 sess = get_session()
@@ -36,8 +50,8 @@ for t in range(1, 1001):
   if t % 50 == 0:
     progbar.update(t, {"Loss": loss_val})
 
-# # CRITICISM
-sess = get_session()
+# CRITICISM
+qmu = variational()  # TODO why is this uninitialized?
 mean, stddev = sess.run([qmu.mean(), qmu.stddev()])
 print("Inferred posterior mean:")
 print(mean)
